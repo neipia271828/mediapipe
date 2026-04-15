@@ -32,10 +32,10 @@ ELBOW_ACROSS_FACE_Y_THRESHOLD = 0.22
 ARM_BENT_X_THRESHOLD = 0.05
 
 # --- RUN ポーズ閾値 ---
-# 腕が肩より上: wrist.y < shoulder.y - この値
-RUN_WRIST_ABOVE_SHOULDER_MARGIN = 0.05
-# 腕が腰より下: wrist.y > hip.y + この値
-RUN_WRIST_BELOW_HIP_MARGIN = 0.02
+# 上の腕: wrist.y < shoulder.y - この値（肩より上）
+RUN_WRIST_ABOVE_SHOULDER_MARGIN = 0.01
+# 下の腕: wrist.y > shoulder.y + この値（肩より下であれば OK、腰まで不要）
+RUN_WRIST_BELOW_SHOULDER_MARGIN = 0.05
 
 # --- SQUAT 閾値 ---
 # (hip_mid_y - shoulder_mid_y) / shoulder_width < この値 = しゃがみ検出
@@ -44,7 +44,8 @@ SQUAT_BODY_RATIO_THRESHOLD = 0.65
 
 # --- 重心傾き / マウス移動 ---
 LEAN_DEADZONE = 0.04        # この値未満の傾きは無視（中立）
-LEAN_MOUSE_SPEED = 8000      # 傾き量に掛ける倍率 (lean_amount * LEAN_MOUSE_SPEED = px/frame)
+LEAN_MOUSE_SPEED = 80000
+      # 傾き量に掛ける倍率 (lean_amount * LEAN_MOUSE_SPEED = px/frame)
 
 # --- モーションジェスチャー閾値 ---
 SWING_COOLDOWN_SEC = 0.5

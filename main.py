@@ -38,7 +38,7 @@ from constant import (
     POSE_STABLE_FRAMES,
     RUN_GRACE_FRAMES,
     RUN_WRIST_ABOVE_SHOULDER_MARGIN,
-    RUN_WRIST_BELOW_HIP_MARGIN,
+    RUN_WRIST_BELOW_SHOULDER_MARGIN,
     SQUAT_BODY_RATIO_THRESHOLD,
     SWING_ARM_TIMEOUT_SEC,
     SWING_COOLDOWN_SEC,
@@ -104,11 +104,11 @@ def judge_pose(image, pose_landmarks, pose_world_landmarks=None) -> str | None:
     body_ratio = (hip_mid_y - shoulder_mid_y) / max(shoulder_width, 0.01)
     squat = body_ratio < SQUAT_BODY_RATIO_THRESHOLD
 
-    # --- RUN: 片腕が肩より上、反対腕が腰より下 ---
+    # --- RUN: 片腕が肩より上、反対腕が肩より下 ---
     right_arm_up   = right_wrist.y < right_shoulder.y - RUN_WRIST_ABOVE_SHOULDER_MARGIN
-    left_arm_down  = left_wrist.y  > left_hip.y        + RUN_WRIST_BELOW_HIP_MARGIN
-    left_arm_up    = left_wrist.y  < left_shoulder.y   - RUN_WRIST_ABOVE_SHOULDER_MARGIN
-    right_arm_down = right_wrist.y > right_hip.y       + RUN_WRIST_BELOW_HIP_MARGIN
+    left_arm_down  = left_wrist.y  > left_shoulder.y  + RUN_WRIST_BELOW_SHOULDER_MARGIN
+    left_arm_up    = left_wrist.y  < left_shoulder.y  - RUN_WRIST_ABOVE_SHOULDER_MARGIN
+    right_arm_down = right_wrist.y > right_shoulder.y + RUN_WRIST_BELOW_SHOULDER_MARGIN
     run = (right_arm_up and left_arm_down) or (left_arm_up and right_arm_down)
 
     # --- 既存ポーズ ---
