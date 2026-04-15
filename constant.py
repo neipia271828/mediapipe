@@ -1,0 +1,57 @@
+from pathlib import Path
+
+
+MODEL_PATH = Path("pose_landmarker.task")
+DEFAULT_IMAGE_PATH = Path("photos/image.png")
+
+COMBO_SEQUENCE = [
+    "LEFT_ARM_ABOVE_HEAD",
+    "RIGHT_ARM_ACROSS_FACE",
+    "IMAGE_POSE",
+]
+
+POSE_KEYBINDS = {
+    "MARUGOTO": "1",
+    "IMAGE_POSE": "return",
+    "LEFT_ARM_ABOVE_HEAD": "a",
+    "RIGHT_ARM_ABOVE_HEAD": "d",
+    "LEFT_ARM_ACROSS_FACE": "j",
+    "RIGHT_ARM_ACROSS_FACE": "k",
+}
+
+POSE_CONNECTIONS = [
+    (11, 12),
+    (11, 13),
+    (13, 15),
+    (12, 14),
+    (14, 16),
+    (11, 23),
+    (12, 24),
+    (23, 24),
+    (23, 25),
+    (25, 27),
+    (24, 26),
+    (26, 28),
+]
+
+MARUGOTO_DISTANCE_M = 0.20
+ARM_ACROSS_FACE_Y_THRESHOLD = 0.18
+ELBOW_ACROSS_FACE_Y_THRESHOLD = 0.22
+ARM_BENT_X_THRESHOLD = 0.05
+
+POSE_LABEL_SCALE = 1.0
+POSE_LABEL_OFFSET_X = 120
+POSE_LABEL_OFFSET_Y = 20
+DISTANCE_LABEL_SCALE = 0.7
+COMBO_LABEL_SCALE = 0.9
+ACTION_LABEL_SCALE = 0.8
+
+COMBO_TIMEOUT_SEC = 3.0
+POSE_STABLE_FRAMES = 3
+KEY_COOLDOWN_SEC = 1.0
+
+CAMERA_BACKENDS = [
+    "default",
+    "avfoundation",
+]
+CAMERA_OPEN_TIMEOUT_SEC = 2.0
