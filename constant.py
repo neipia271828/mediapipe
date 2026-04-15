@@ -10,15 +10,6 @@ COMBO_SEQUENCE = [
     "IMAGE_POSE",
 ]
 
-POSE_KEYBINDS = {
-    "MARUGOTO": "1",
-    "IMAGE_POSE": "return",
-    "LEFT_ARM_ABOVE_HEAD": "a",
-    "RIGHT_ARM_ABOVE_HEAD": "d",
-    "LEFT_ARM_ACROSS_FACE": "j",
-    "RIGHT_ARM_ACROSS_FACE": "k",
-}
-
 POSE_CONNECTIONS = [
     (11, 12),
     (11, 13),
@@ -34,11 +25,39 @@ POSE_CONNECTIONS = [
     (26, 28),
 ]
 
+# --- 既存ポーズ閾値 ---
 MARUGOTO_DISTANCE_M = 0.20
 ARM_ACROSS_FACE_Y_THRESHOLD = 0.18
 ELBOW_ACROSS_FACE_Y_THRESHOLD = 0.22
 ARM_BENT_X_THRESHOLD = 0.05
 
+# --- RUN ポーズ閾値 ---
+# 腕が肩より上: wrist.y < shoulder.y - この値
+RUN_WRIST_ABOVE_SHOULDER_MARGIN = 0.05
+# 腕が腰より下: wrist.y > hip.y + この値
+RUN_WRIST_BELOW_HIP_MARGIN = 0.02
+
+# --- SQUAT 閾値 ---
+# (hip_mid_y - shoulder_mid_y) / shoulder_width < この値 = しゃがみ検出
+# 直立時は約 0.9〜1.1。しゃがむと体が縮むので値が小さくなる
+SQUAT_BODY_RATIO_THRESHOLD = 0.65
+
+# --- 重心傾き / マウス移動 ---
+LEAN_DEADZONE = 0.04        # この値未満の傾きは無視（中立）
+LEAN_MOUSE_SPEED = 20       # 傾き中に1フレームごとに動かすピクセル数
+
+# --- モーションジェスチャー閾値 ---
+SWING_BUFFER_FRAMES = 20
+SWING_COOLDOWN_SEC = 0.5
+SWING_MAX_TIME_SEC = 1.2    # ジェスチャーはこの秒数以内に完了する必要がある
+# USE（左クリック）: 右手が右上→左下 (dx<0, dy>0)
+SWING_USE_MIN_DX = 0.15
+SWING_USE_MIN_DY = 0.10
+# SCROLL（ホイール）: 右手が左下→右下 (dx>0, |dy|小)
+SWING_SCROLL_MIN_DX = 0.15
+SWING_SCROLL_MAX_DY = 0.08
+
+# --- 表示 ---
 POSE_LABEL_SCALE = 1.0
 POSE_LABEL_OFFSET_X = 120
 POSE_LABEL_OFFSET_Y = 20
@@ -46,10 +65,12 @@ DISTANCE_LABEL_SCALE = 0.7
 COMBO_LABEL_SCALE = 0.9
 ACTION_LABEL_SCALE = 0.8
 
+# --- タイミング ---
 COMBO_TIMEOUT_SEC = 3.0
 POSE_STABLE_FRAMES = 3
 KEY_COOLDOWN_SEC = 1.0
 
+# --- カメラ ---
 CAMERA_BACKENDS = [
     "default",
     "avfoundation",

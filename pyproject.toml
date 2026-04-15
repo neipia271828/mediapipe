@@ -7,4 +7,5 @@ requires-python = "==3.12.*"
 dependencies = [
     "ipywidgets>=8.1.8",
     "mediapipe>=0.10.33",
+    "pynput>=1.8.1",
 ]

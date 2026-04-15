@@ -3,15 +3,18 @@ from __future__ import annotations
 import argparse
 import math
 import multiprocessing as mp_process
-import platform
-import subprocess
 import time
+from collections import deque
 from pathlib import Path
 
 import cv2
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
+from pynput.keyboard import Key
+from pynput.keyboard import Controller as KeyboardController
+from pynput.mouse import Button
+from pynput.mouse import Controller as MouseController
 
 from constant import (
     ACTION_LABEL_SCALE,
@@ -25,17 +28,31 @@ from constant import (
     DEFAULT_IMAGE_PATH,
     DISTANCE_LABEL_SCALE,
     ELBOW_ACROSS_FACE_Y_THRESHOLD,
-    KEY_COOLDOWN_SEC,
+    LEAN_DEADZONE,
+    LEAN_MOUSE_SPEED,
     MARUGOTO_DISTANCE_M,
     MODEL_PATH,
     POSE_CONNECTIONS,
-    POSE_KEYBINDS,
     POSE_LABEL_OFFSET_X,
     POSE_LABEL_OFFSET_Y,
     POSE_LABEL_SCALE,
     POSE_STABLE_FRAMES,
+    RUN_WRIST_ABOVE_SHOULDER_MARGIN,
+    RUN_WRIST_BELOW_HIP_MARGIN,
+    SQUAT_BODY_RATIO_THRESHOLD,
+    SWING_BUFFER_FRAMES,
+    SWING_COOLDOWN_SEC,
+    SWING_MAX_TIME_SEC,
+    SWING_SCROLL_MAX_DY,
+    SWING_SCROLL_MIN_DX,
+    SWING_USE_MIN_DX,
+    SWING_USE_MIN_DY,
 )
 
+
+# ---------------------------------------------------------------------------
+# Detector
+# ---------------------------------------------------------------------------
 
 def create_detector(model_path: Path) -> vision.PoseLandmarker:
     if not model_path.exists():
@@ -48,6 +65,10 @@ def create_detector(model_path: Path) -> vision.PoseLandmarker:
     )
     return vision.PoseLandmarker.create_from_options(options)
 
+
+# ---------------------------------------------------------------------------
+# Drawing
+# ---------------------------------------------------------------------------
 
 def draw_bones(image, pose_landmarks) -> None:
     h, w, _ = image.shape
@@ -64,21 +85,42 @@ def draw_bones(image, pose_landmarks) -> None:
         cv2.circle(image, (cx, cy), 5, (0, 255, 0), -1)
 
 
+# ---------------------------------------------------------------------------
+# Pose detection
+# ---------------------------------------------------------------------------
+
 def judge_pose(image, pose_landmarks, pose_world_landmarks=None) -> str | None:
     h, w, _ = image.shape
 
-    nose = pose_landmarks[0]
-    left_shoulder = pose_landmarks[11]
+    nose           = pose_landmarks[0]
+    left_shoulder  = pose_landmarks[11]
     right_shoulder = pose_landmarks[12]
-    left_elbow = pose_landmarks[13]
-    right_elbow = pose_landmarks[14]
-    left_wrist = pose_landmarks[15]
-    right_wrist = pose_landmarks[16]
+    left_elbow     = pose_landmarks[13]
+    right_elbow    = pose_landmarks[14]
+    left_wrist     = pose_landmarks[15]
+    right_wrist    = pose_landmarks[16]
+    left_hip       = pose_landmarks[23]
+    right_hip      = pose_landmarks[24]
 
+    # --- SQUAT: 体の縦方向が肩幅に対して圧縮されている ---
+    shoulder_mid_y = (left_shoulder.y + right_shoulder.y) / 2
+    hip_mid_y      = (left_hip.y + right_hip.y) / 2
+    shoulder_width = abs(left_shoulder.x - right_shoulder.x)
+    body_ratio = (hip_mid_y - shoulder_mid_y) / max(shoulder_width, 0.01)
+    squat = body_ratio < SQUAT_BODY_RATIO_THRESHOLD
+
+    # --- RUN: 片腕が肩より上、反対腕が腰より下 ---
+    right_arm_up   = right_wrist.y < right_shoulder.y - RUN_WRIST_ABOVE_SHOULDER_MARGIN
+    left_arm_down  = left_wrist.y  > left_hip.y        + RUN_WRIST_BELOW_HIP_MARGIN
+    left_arm_up    = left_wrist.y  < left_shoulder.y   - RUN_WRIST_ABOVE_SHOULDER_MARGIN
+    right_arm_down = right_wrist.y > right_hip.y       + RUN_WRIST_BELOW_HIP_MARGIN
+    run = (right_arm_up and left_arm_down) or (left_arm_up and right_arm_down)
+
+    # --- 既存ポーズ ---
     wrist_distance_m = None
     marugoto = False
     if pose_world_landmarks is not None:
-        left_wrist_world = pose_world_landmarks[15]
+        left_wrist_world  = pose_world_landmarks[15]
         right_wrist_world = pose_world_landmarks[16]
         wrist_distance_m = math.sqrt(
             (left_wrist_world.x - right_wrist_world.x) ** 2
@@ -87,15 +129,11 @@ def judge_pose(image, pose_landmarks, pose_world_landmarks=None) -> str | None:
         )
         marugoto = wrist_distance_m <= MARUGOTO_DISTANCE_M
 
-    left_arm_above_head = (
-        left_wrist.y < nose.y and left_elbow.y < left_shoulder.y
-    )
-    right_arm_above_head = (
-        right_wrist.y < nose.y and right_elbow.y < right_shoulder.y
-    )
+    left_arm_above_head  = left_wrist.y  < nose.y and left_elbow.y  < left_shoulder.y
+    right_arm_above_head = right_wrist.y < nose.y and right_elbow.y < right_shoulder.y
     left_arm_across_face = (
-        abs(left_wrist.y - nose.y) < ARM_ACROSS_FACE_Y_THRESHOLD
-        and abs(left_elbow.y - nose.y) < ELBOW_ACROSS_FACE_Y_THRESHOLD
+        abs(left_wrist.y  - nose.y) < ARM_ACROSS_FACE_Y_THRESHOLD
+        and abs(left_elbow.y  - nose.y) < ELBOW_ACROSS_FACE_Y_THRESHOLD
         and left_wrist.x > left_shoulder.x
     )
     right_arm_across_face = (
@@ -103,7 +141,7 @@ def judge_pose(image, pose_landmarks, pose_world_landmarks=None) -> str | None:
         and abs(right_elbow.y - nose.y) < ELBOW_ACROSS_FACE_Y_THRESHOLD
         and right_wrist.x < right_shoulder.x
     )
-    left_bent = abs(left_wrist.x - left_elbow.x) > ARM_BENT_X_THRESHOLD
+    left_bent  = abs(left_wrist.x  - left_elbow.x)  > ARM_BENT_X_THRESHOLD
     right_bent = abs(right_wrist.x - right_elbow.x) > ARM_BENT_X_THRESHOLD
 
     image_pose = (
@@ -112,42 +150,29 @@ def judge_pose(image, pose_landmarks, pose_world_landmarks=None) -> str | None:
         right_arm_above_head and left_arm_across_face and left_bent and right_bent
     )
 
-    if marugoto:
-        pose_key = "MARUGOTO"
-        label = "MARUGOTO"
-        color = (0, 255, 0)
+    # --- 優先順位でポーズを決定 ---
+    if squat:
+        pose_key, label, color = "SQUAT",           "SQUAT",             (0, 128, 255)
+    elif run:
+        pose_key, label, color = "RUN",             "RUN",               (0, 255, 128)
+    elif marugoto:
+        pose_key, label, color = "MARUGOTO",        "MARUGOTO",          (0, 255, 0)
     elif image_pose:
-        pose_key = "IMAGE_POSE"
-        label = "IMAGE POSE!"
-        color = (255, 255, 255)
+        pose_key, label, color = "IMAGE_POSE",      "IMAGE POSE!",       (255, 255, 255)
     elif left_arm_above_head:
-        pose_key = "LEFT_ARM_ABOVE_HEAD"
-        label = "LEFT ARM ABOVE HEAD"
-        color = (255, 255, 128)
+        pose_key, label, color = "LEFT_ARM_ABOVE_HEAD",  "LEFT ARM ABOVE HEAD",  (255, 255, 128)
     elif right_arm_above_head:
-        pose_key = "RIGHT_ARM_ABOVE_HEAD"
-        label = "RIGHT ARM ABOVE HEAD"
-        color = (255, 255, 0)
+        pose_key, label, color = "RIGHT_ARM_ABOVE_HEAD", "RIGHT ARM ABOVE HEAD", (255, 255, 0)
     elif left_arm_across_face:
-        pose_key = "LEFT_ARM_ACROSS_FACE"
-        label = "LEFT ARM ACROSS FACE"
-        color = (255, 128, 255)
+        pose_key, label, color = "LEFT_ARM_ACROSS_FACE",  "LEFT ARM ACROSS FACE",  (255, 128, 255)
     elif right_arm_across_face:
-        pose_key = "RIGHT_ARM_ACROSS_FACE"
-        label = "RIGHT ARM ACROSS FACE"
-        color = (255, 128, 128)
+        pose_key, label, color = "RIGHT_ARM_ACROSS_FACE", "RIGHT ARM ACROSS FACE", (255, 128, 128)
     elif left_bent:
-        pose_key = "LEFT_BENT"
-        label = "LEFT BENT"
-        color = (255, 128, 0)
+        pose_key, label, color = "LEFT_BENT",  "LEFT BENT",  (255, 128, 0)
     elif right_bent:
-        pose_key = "RIGHT_BENT"
-        label = "RIGHT BENT"
-        color = (255, 0, 255)
+        pose_key, label, color = "RIGHT_BENT", "RIGHT BENT", (255, 0, 255)
     else:
-        pose_key = None
-        label = "Keep Trying..."
-        color = (0, 0, 255)
+        pose_key, label, color = None, "Keep Trying...", (0, 0, 255)
 
     chest_x = int((left_shoulder.x + right_shoulder.x) / 2 * w) - POSE_LABEL_OFFSET_X
     chest_y = int(min(left_shoulder.y, right_shoulder.y) * h) - POSE_LABEL_OFFSET_Y
@@ -174,6 +199,28 @@ def judge_pose(image, pose_landmarks, pose_world_landmarks=None) -> str | None:
 
     return pose_key
 
+
+def get_body_lean(pose_landmarks) -> float:
+    """
+    体の傾きを返す。
+    正値 = 画像内で右側に傾いている（カメラ非ミラー時はユーザーの右）
+    負値 = 左側に傾いている
+    """
+    left_shoulder  = pose_landmarks[11]
+    right_shoulder = pose_landmarks[12]
+    left_hip       = pose_landmarks[23]
+    right_hip      = pose_landmarks[24]
+
+    shoulder_mid_x = (left_shoulder.x + right_shoulder.x) / 2
+    hip_mid_x      = (left_hip.x      + right_hip.x)      / 2
+
+    # 肩の中心が腰の中心より右 = 右に傾いている
+    return shoulder_mid_x - hip_mid_x
+
+
+# ---------------------------------------------------------------------------
+# Combo (既存機能)
+# ---------------------------------------------------------------------------
 
 def update_combo(combo_state: dict, current_pose: str | None) -> None:
     if current_pose is not None and current_pose == combo_state["last_pose"]:
@@ -224,20 +271,31 @@ def update_combo(combo_state: dict, current_pose: str | None) -> None:
         combo_state["message"] = f"WRONG ORDER: 1/{len(COMBO_SEQUENCE)}  {COMBO_SEQUENCE[0]}"
 
 
-def send_keypress(key: str) -> None:
-    if platform.system() != "Darwin":
-        return
+# ---------------------------------------------------------------------------
+# Input control: 長押し + マウス移動
+# ---------------------------------------------------------------------------
 
-    script = f'tell application "System Events" to keystroke "{key}"'
-    if key == "space":
-        script = 'tell application "System Events" to key code 49'
-    elif key == "return":
-        script = 'tell application "System Events" to key code 36'
+def _set_held(held_keys: set, key, should_hold: bool, kb: KeyboardController) -> None:
+    """キーの長押し / 解放を管理する。"""
+    if should_hold and key not in held_keys:
+        kb.press(key)
+        held_keys.add(key)
+    elif not should_hold and key in held_keys:
+        kb.release(key)
+        held_keys.discard(key)
 
-    subprocess.run(["osascript", "-e", script], check=False)
 
-
-def update_pose_actions(action_state: dict, current_pose: str | None) -> str | None:
+def update_held_inputs(
+    action_state: dict,
+    current_pose: str | None,
+    lean: float,
+    kb: KeyboardController,
+    mouse_ctrl: MouseController,
+) -> None:
+    """
+    ポーズに応じてキー長押し / 解放と、傾きに応じたマウス移動を行う。
+    """
+    # stable_frames カウント
     if current_pose is not None and current_pose == action_state["last_pose"]:
         action_state["stable_frames"] += 1
     elif current_pose is not None:
@@ -246,44 +304,139 @@ def update_pose_actions(action_state: dict, current_pose: str | None) -> str | N
     else:
         action_state["last_pose"] = None
         action_state["stable_frames"] = 0
-        return None
 
-    if action_state["stable_frames"] < POSE_STABLE_FRAMES:
-        return None
+    stable = action_state["stable_frames"] >= POSE_STABLE_FRAMES
+    held   = action_state["held_keys"]
 
+    # 'd' キー: RUN ポーズ中は長押し
+    should_run   = stable and current_pose == "RUN"
+    # Shift キー: SQUAT ポーズ中は長押し
+    should_squat = stable and current_pose == "SQUAT"
+
+    _set_held(held, "d",       should_run,   kb)
+    _set_held(held, Key.shift, should_squat, kb)
+
+    # マウス移動: RUN 中に傾いたらカーソルを動かす
+    if should_run:
+        if lean > LEAN_DEADZONE:
+            mouse_ctrl.move(LEAN_MOUSE_SPEED, 0)
+            action_state["message"] = f"RUN + LEAN RIGHT  (lean={lean:+.3f})"
+        elif lean < -LEAN_DEADZONE:
+            mouse_ctrl.move(-LEAN_MOUSE_SPEED, 0)
+            action_state["message"] = f"RUN + LEAN LEFT   (lean={lean:+.3f})"
+        else:
+            action_state["message"] = "RUN"
+    elif should_squat:
+        action_state["message"] = "SQUAT [Shift]"
+    elif current_pose is not None:
+        action_state["message"] = f"POSE: {current_pose}"
+    else:
+        action_state["message"] = "READY"
+
+
+def release_all_held(action_state: dict, kb: KeyboardController) -> None:
+    """プログラム終了時にすべての長押しキーを解放する。"""
+    for key in list(action_state.get("held_keys", set())):
+        try:
+            kb.release(key)
+        except Exception:
+            pass
+    action_state.get("held_keys", set()).clear()
+
+
+# ---------------------------------------------------------------------------
+# Motion gesture detection
+# ---------------------------------------------------------------------------
+
+def update_motion_gestures(
+    gesture_state: dict,
+    right_wrist_x: float,
+    right_wrist_y: float,
+    mouse_ctrl: MouseController,
+) -> str | None:
+    """
+    右手首の軌跡からジェスチャーを検出する。
+
+    SWING_USE   : 右上→左下 → 左クリック
+    SWING_SCROLL: 左下→右下 → マウスホイール（スクロールダウン）
+    """
     now = time.time()
-    last_trigger = action_state["last_trigger_times"].get(current_pose, 0.0)
-    if now - last_trigger < action_state["cooldown_sec"]:
+    gesture_state["history"].append((right_wrist_x, right_wrist_y, now))
+
+    history = gesture_state["history"]
+    if len(history) < 5:
         return None
 
-    key = POSE_KEYBINDS.get(current_pose)
-    if key is None:
+    oldest_x, oldest_y, oldest_t = history[0]
+    newest_x, newest_y, newest_t = history[-1]
+
+    # 古すぎるデータは無効
+    if newest_t - oldest_t > SWING_MAX_TIME_SEC:
         return None
 
-    send_keypress(key)
-    action_state["last_trigger_times"][current_pose] = now
-    action_state["stable_frames"] = 0
-    action_state["last_pose"] = None
-    action_state["message"] = f"KEY SENT: {current_pose} -> {key}"
-    return key
+    dx = newest_x - oldest_x
+    dy = newest_y - oldest_y
 
+    gesture = None
+    if dx < -SWING_USE_MIN_DX and dy > SWING_USE_MIN_DY:
+        # 右上→左下: USE（左クリック）
+        gesture = "SWING_USE"
+    elif dx > SWING_SCROLL_MIN_DX and abs(dy) < SWING_SCROLL_MAX_DY:
+        # 左下→右下（水平移動）: SCROLL
+        gesture = "SWING_SCROLL"
+
+    if gesture is None:
+        return None
+
+    # クールダウン確認
+    last_trigger = gesture_state["last_trigger_times"].get(gesture, 0.0)
+    if now - last_trigger < SWING_COOLDOWN_SEC:
+        return None
+
+    gesture_state["last_trigger_times"][gesture] = now
+    gesture_state["history"].clear()
+
+    if gesture == "SWING_USE":
+        mouse_ctrl.click(Button.left)
+        gesture_state["message"] = "USE [Left Click]"
+    elif gesture == "SWING_SCROLL":
+        mouse_ctrl.scroll(0, -3)
+        gesture_state["message"] = "SCROLL [Wheel]"
+
+    return gesture
+
+
+# ---------------------------------------------------------------------------
+# Frame processing
+# ---------------------------------------------------------------------------
 
 def process_frame(
     image,
     detector: vision.PoseLandmarker,
     combo_state: dict | None,
     action_state: dict | None,
-):
+) -> tuple:
+    """
+    Returns: (processed_image, current_pose, lean, right_wrist_xy)
+    lean = 0.0 and right_wrist_xy = None when no pose is detected.
+    """
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
-    result = detector.detect(mp_image)
-    current_pose = None
+    mp_image  = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
+    result    = detector.detect(mp_image)
+
+    current_pose   = None
+    lean           = 0.0
+    right_wrist_xy = None
 
     if result.pose_landmarks:
-        landmarks = result.pose_landmarks[0]
+        landmarks       = result.pose_landmarks[0]
         world_landmarks = result.pose_world_landmarks[0] if result.pose_world_landmarks else None
+
         draw_bones(image, landmarks)
-        current_pose = judge_pose(image, landmarks, world_landmarks)
+        current_pose   = judge_pose(image, landmarks, world_landmarks)
+        lean           = get_body_lean(landmarks)
+        rw             = landmarks[16]
+        right_wrist_xy = (rw.x, rw.y)
 
     if combo_state is not None:
         update_combo(combo_state, current_pose)
@@ -298,7 +451,6 @@ def process_frame(
         )
 
     if action_state is not None:
-        update_pose_actions(action_state, current_pose)
         cv2.putText(
             image,
             action_state["message"],
@@ -309,8 +461,12 @@ def process_frame(
             2,
         )
 
-    return image, current_pose
+    return image, current_pose, lean, right_wrist_xy
 
+
+# ---------------------------------------------------------------------------
+# Camera utilities
+# ---------------------------------------------------------------------------
 
 def _probe_camera_worker(index: int, backend_name: str, queue) -> None:
     if backend_name == "avfoundation" and hasattr(cv2, "CAP_AVFOUNDATION"):
@@ -326,7 +482,7 @@ def _probe_camera_worker(index: int, backend_name: str, queue) -> None:
 
 def probe_camera_backend(index: int, backend_name: str, timeout_sec: float) -> bool:
     queue = mp_process.Queue()
-    proc = mp_process.Process(
+    proc  = mp_process.Process(
         target=_probe_camera_worker,
         args=(index, backend_name, queue),
         daemon=True,
@@ -339,10 +495,7 @@ def probe_camera_backend(index: int, backend_name: str, timeout_sec: float) -> b
         proc.join()
         return False
 
-    if queue.empty():
-        return False
-
-    return bool(queue.get())
+    return not queue.empty() and bool(queue.get())
 
 
 def open_camera(index: int = 0):
@@ -351,27 +504,29 @@ def open_camera(index: int = 0):
             continue
 
         if backend_name == "avfoundation" and hasattr(cv2, "CAP_AVFOUNDATION"):
-            cap = cv2.VideoCapture(index, cv2.CAP_AVFOUNDATION)
-            opened = cap.isOpened()
+            cap          = cv2.VideoCapture(index, cv2.CAP_AVFOUNDATION)
             display_name = "AVFoundation"
         else:
-            cap = cv2.VideoCapture(index)
-            opened = cap.isOpened()
+            cap          = cv2.VideoCapture(index)
             display_name = "Default"
 
-        if opened:
+        if cap.isOpened():
             return cap, display_name
         cap.release()
 
     return None, None
 
 
+# ---------------------------------------------------------------------------
+# Run modes
+# ---------------------------------------------------------------------------
+
 def run_image(detector: vision.PoseLandmarker, image_path: Path, output_path: Path | None) -> None:
     image = cv2.imread(str(image_path))
     if image is None:
         raise FileNotFoundError(f"画像を読めません: {image_path.resolve()}")
 
-    processed, pose = process_frame(image, detector, combo_state=None, action_state=None)
+    processed, pose, _, _ = process_frame(image, detector, combo_state=None, action_state=None)
     print(f"detected_pose={pose}")
 
     if output_path is not None:
@@ -385,19 +540,26 @@ def run_image(detector: vision.PoseLandmarker, image_path: Path, output_path: Pa
 
 
 def run_camera(detector: vision.PoseLandmarker, camera_index: int) -> None:
+    kb         = KeyboardController()
+    mouse_ctrl = MouseController()
+
     combo_state = {
-        "index": 0,
-        "last_pose": None,
-        "stable_frames": 0,
+        "index":          0,
+        "last_pose":      None,
+        "stable_frames":  0,
         "last_step_time": 0.0,
-        "message": f"COMBO: 1/{len(COMBO_SEQUENCE)}  {COMBO_SEQUENCE[0]}",
+        "message":        f"COMBO: 1/{len(COMBO_SEQUENCE)}  {COMBO_SEQUENCE[0]}",
     }
     action_state = {
-        "last_pose": None,
+        "last_pose":     None,
         "stable_frames": 0,
+        "held_keys":     set(),
+        "message":       "READY",
+    }
+    gesture_state = {
+        "history":            deque(maxlen=SWING_BUFFER_FRAMES),
         "last_trigger_times": {},
-        "cooldown_sec": KEY_COOLDOWN_SEC,
-        "message": "KEY READY",
+        "message":            "",
     }
 
     cap, backend_name = open_camera(camera_index)
@@ -406,9 +568,14 @@ def run_camera(detector: vision.PoseLandmarker, camera_index: int) -> None:
 
     print(f"camera={backend_name}")
     print("q で終了します")
-    print(f"keybinds={POSE_KEYBINDS}")
-    if platform.system() == "Darwin":
-        print("macOS の場合は Terminal / Python にアクセシビリティ権限が必要です")
+    print("ポーズ対応:")
+    print("  RUN   (片腕↑ + 反対腕↓)     → d キー長押し")
+    print("  RUN + 右傾き                → d 長押し + カーソル右")
+    print("  RUN + 左傾き                → d 長押し + カーソル左")
+    print("  右手を右上→左下に振り下ろす  → 左クリック")
+    print("  右手を左下→右下へ横移動      → マウスホイール")
+    print("  しゃがむ                    → Shift 長押し")
+    print("macOS の場合は Terminal に Accessibility 権限が必要です")
 
     try:
         while True:
@@ -417,32 +584,59 @@ def run_camera(detector: vision.PoseLandmarker, camera_index: int) -> None:
                 print("フレーム取得に失敗しました")
                 break
 
-            processed, _ = process_frame(
+            processed, current_pose, lean, right_wrist_xy = process_frame(
                 frame,
                 detector,
                 combo_state=combo_state,
                 action_state=action_state,
             )
+
+            # キー長押し / マウス移動
+            update_held_inputs(action_state, current_pose, lean, kb, mouse_ctrl)
+
+            # モーションジェスチャー検出
+            if right_wrist_xy is not None:
+                update_motion_gestures(gesture_state, right_wrist_xy[0], right_wrist_xy[1], mouse_ctrl)
+
+            # ジェスチャーメッセージをフレームに描画
+            gesture_msg = str(gesture_state["message"])
+            if gesture_msg:
+                fh = processed.shape[0]
+                cv2.putText(
+                    processed,
+                    gesture_msg,
+                    (20, fh - 50),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.9,
+                    (0, 200, 255),
+                    2,
+                )
+
             cv2.imshow("MediaPipe Pose", processed)
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
     finally:
+        release_all_held(action_state, kb)
         cap.release()
         cv2.destroyAllWindows()
 
 
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=["camera", "image"], default="camera")
-    parser.add_argument("--image", type=Path, default=DEFAULT_IMAGE_PATH)
-    parser.add_argument("--output", type=Path)
-    parser.add_argument("--camera-index", type=int, default=0)
-    parser.add_argument("--model", type=Path, default=MODEL_PATH)
+    parser.add_argument("--mode",         choices=["camera", "image"], default="camera")
+    parser.add_argument("--image",        type=Path, default=DEFAULT_IMAGE_PATH)
+    parser.add_argument("--output",       type=Path)
+    parser.add_argument("--camera-index", type=int,  default=0)
+    parser.add_argument("--model",        type=Path, default=MODEL_PATH)
     return parser.parse_args()
 
 
 def main():
-    args = parse_args()
+    args     = parse_args()
     detector = create_detector(args.model)
 
     if args.mode == "image":
