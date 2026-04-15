@@ -44,7 +44,7 @@ SQUAT_BODY_RATIO_THRESHOLD = 0.65
 
 # --- 重心傾き / マウス移動 ---
 LEAN_DEADZONE = 0.04        # この値未満の傾きは無視（中立）
-LEAN_MOUSE_SPEED = 20       # 傾き中に1フレームごとに動かすピクセル数
+LEAN_MOUSE_SPEED = 800      # 傾き量に掛ける倍率 (lean_amount * LEAN_MOUSE_SPEED = px/frame)
 
 # --- モーションジェスチャー閾値 ---
 SWING_BUFFER_FRAMES = 20

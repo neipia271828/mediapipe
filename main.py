@@ -319,11 +319,13 @@ def update_held_inputs(
     # マウス移動: RUN 中に傾いたらカーソルを動かす
     if should_run:
         if lean > LEAN_DEADZONE:
-            mouse_ctrl.move(LEAN_MOUSE_SPEED, 0)
-            action_state["message"] = f"RUN + LEAN RIGHT  (lean={lean:+.3f})"
+            dx = int((lean - LEAN_DEADZONE) * LEAN_MOUSE_SPEED)
+            mouse_ctrl.move(dx, 0)
+            action_state["message"] = f"RUN + LEAN RIGHT  dx={dx}px (lean={lean:+.3f})"
         elif lean < -LEAN_DEADZONE:
-            mouse_ctrl.move(-LEAN_MOUSE_SPEED, 0)
-            action_state["message"] = f"RUN + LEAN LEFT   (lean={lean:+.3f})"
+            dx = int((lean + LEAN_DEADZONE) * LEAN_MOUSE_SPEED)
+            mouse_ctrl.move(dx, 0)
+            action_state["message"] = f"RUN + LEAN LEFT   dx={dx}px (lean={lean:+.3f})"
         else:
             action_state["message"] = "RUN"
     elif should_squat:
