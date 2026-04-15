@@ -37,6 +37,7 @@ from constant import (
     POSE_LABEL_OFFSET_Y,
     POSE_LABEL_SCALE,
     POSE_STABLE_FRAMES,
+    RUN_GRACE_FRAMES,
     RUN_WRIST_ABOVE_SHOULDER_MARGIN,
     RUN_WRIST_BELOW_HIP_MARGIN,
     SQUAT_BODY_RATIO_THRESHOLD,
@@ -294,6 +295,9 @@ def update_held_inputs(
 ) -> None:
     """
     ポーズに応じてキー長押し / 解放と、傾きに応じたマウス移動を行う。
+
+    RUN / SQUAT がグレース期間内に再検出されればキー押下が継続する。
+    これにより腕振りの折り返し時にキーが一瞬解放されるのを防ぐ。
     """
     # stable_frames カウント
     if current_pose is not None and current_pose == action_state["last_pose"]:
@@ -308,10 +312,20 @@ def update_held_inputs(
     stable = action_state["stable_frames"] >= POSE_STABLE_FRAMES
     held   = action_state["held_keys"]
 
-    # 'd' キー: RUN ポーズ中は長押し
-    should_run   = stable and current_pose == "RUN"
-    # Shift キー: SQUAT ポーズ中は長押し
-    should_squat = stable and current_pose == "SQUAT"
+    # --- RUN グレース管理 ---
+    if stable and current_pose == "RUN":
+        action_state["run_grace"] = RUN_GRACE_FRAMES  # ポーズ検出中はフル充填
+    elif action_state["run_grace"] > 0:
+        action_state["run_grace"] -= 1                # 途切れたらカウントダウン
+
+    # --- SQUAT グレース管理 ---
+    if stable and current_pose == "SQUAT":
+        action_state["squat_grace"] = RUN_GRACE_FRAMES
+    elif action_state["squat_grace"] > 0:
+        action_state["squat_grace"] -= 1
+
+    should_run   = action_state["run_grace"]   > 0
+    should_squat = action_state["squat_grace"] > 0
 
     _set_held(held, "d",       should_run,   kb)
     _set_held(held, Key.shift, should_squat, kb)
@@ -556,6 +570,8 @@ def run_camera(detector: vision.PoseLandmarker, camera_index: int) -> None:
         "last_pose":     None,
         "stable_frames": 0,
         "held_keys":     set(),
+        "run_grace":     0,
+        "squat_grace":   0,
         "message":       "READY",
     }
     gesture_state = {

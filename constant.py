@@ -69,6 +69,9 @@ ACTION_LABEL_SCALE = 0.8
 COMBO_TIMEOUT_SEC = 3.0
 POSE_STABLE_FRAMES = 3
 KEY_COOLDOWN_SEC = 1.0
+# RUN/SQUAT ポーズが途切れても d/Shift を保持し続けるフレーム数
+# 腕振りの折り返し時に一瞬ポーズが外れても継続する
+RUN_GRACE_FRAMES = 12
 
 # --- カメラ ---
 CAMERA_BACKENDS = [
