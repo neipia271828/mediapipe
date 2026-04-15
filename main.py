@@ -271,11 +271,15 @@ def update_combo(combo_state: dict, current_pose: str | None) -> None:
 # ---------------------------------------------------------------------------
 
 def _set_held(held_keys: set, key, should_hold: bool, kb: KeyboardController) -> None:
-    """キーの長押し / 解放を管理する。"""
-    if should_hold and key not in held_keys:
-        kb.press(key)
+    """キーの長押し / 解放を管理する。
+
+    pynput の kb.press() は1回のキーダウンイベントしか送らないため、
+    毎フレーム送り続けてゲーム側に「押しっぱなし」を認識させる。
+    """
+    if should_hold:
+        kb.press(key)          # 毎フレーム送信 → ゲームが長押しとして認識
         held_keys.add(key)
-    elif not should_hold and key in held_keys:
+    elif key in held_keys:
         kb.release(key)
         held_keys.discard(key)
 
