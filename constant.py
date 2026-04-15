@@ -44,18 +44,12 @@ SQUAT_BODY_RATIO_THRESHOLD = 0.65
 
 # --- 重心傾き / マウス移動 ---
 LEAN_DEADZONE = 0.04        # この値未満の傾きは無視（中立）
-LEAN_MOUSE_SPEED = 800      # 傾き量に掛ける倍率 (lean_amount * LEAN_MOUSE_SPEED = px/frame)
+LEAN_MOUSE_SPEED = 8000      # 傾き量に掛ける倍率 (lean_amount * LEAN_MOUSE_SPEED = px/frame)
 
 # --- モーションジェスチャー閾値 ---
-SWING_BUFFER_FRAMES = 20
 SWING_COOLDOWN_SEC = 0.5
-SWING_MAX_TIME_SEC = 1.2    # ジェスチャーはこの秒数以内に完了する必要がある
-# USE（左クリック）: 右手が右上→左下 (dx<0, dy>0)
-SWING_USE_MIN_DX = 0.15
-SWING_USE_MIN_DY = 0.10
-# SCROLL（ホイール）: 右手が左下→右下 (dx>0, |dy|小)
-SWING_SCROLL_MIN_DX = 0.15
-SWING_SCROLL_MAX_DY = 0.08
+# 開始ゾーンに入ってからこの秒数以内に終了ゾーンへ移動しないとリセット
+SWING_ARM_TIMEOUT_SEC = 1.5
 
 # --- 表示 ---
 POSE_LABEL_SCALE = 1.0
@@ -71,7 +65,7 @@ POSE_STABLE_FRAMES = 3
 KEY_COOLDOWN_SEC = 1.0
 # RUN/SQUAT ポーズが途切れても d/Shift を保持し続けるフレーム数
 # 腕振りの折り返し時に一瞬ポーズが外れても継続する
-RUN_GRACE_FRAMES = 12
+RUN_GRACE_FRAMES = 24
 
 # --- カメラ ---
 CAMERA_BACKENDS = [

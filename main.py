@@ -4,7 +4,6 @@ import argparse
 import math
 import multiprocessing as mp_process
 import time
-from collections import deque
 from pathlib import Path
 
 import cv2
@@ -41,13 +40,8 @@ from constant import (
     RUN_WRIST_ABOVE_SHOULDER_MARGIN,
     RUN_WRIST_BELOW_HIP_MARGIN,
     SQUAT_BODY_RATIO_THRESHOLD,
-    SWING_BUFFER_FRAMES,
+    SWING_ARM_TIMEOUT_SEC,
     SWING_COOLDOWN_SEC,
-    SWING_MAX_TIME_SEC,
-    SWING_SCROLL_MAX_DY,
-    SWING_SCROLL_MIN_DX,
-    SWING_USE_MIN_DX,
-    SWING_USE_MIN_DY,
 )
 
 
@@ -368,58 +362,63 @@ def update_motion_gestures(
     gesture_state: dict,
     right_wrist_x: float,
     right_wrist_y: float,
+    midline_x: float,
+    shoulder_y: float,
     mouse_ctrl: MouseController,
 ) -> str | None:
     """
-    右手首の軌跡からジェスチャーを検出する。
+    ゾーン遷移でジェスチャーを検出する。
 
-    SWING_USE   : 右上→左下 → 左クリック
-    SWING_SCROLL: 左下→右下 → マウスホイール（スクロールダウン）
+    SWING_USE   : (正中線より右 + 肩より上) → (正中線より左 + 肩より下) → 左クリック
+    SWING_SCROLL: (正中線より左 + 肩より下) → (正中線より右 + 肩より下) → ホイール
     """
     now = time.time()
-    gesture_state["history"].append((right_wrist_x, right_wrist_y, now))
 
-    history = gesture_state["history"]
-    if len(history) < 5:
-        return None
+    right_of_mid = right_wrist_x > midline_x
+    left_of_mid  = right_wrist_x < midline_x
+    above_sh     = right_wrist_y < shoulder_y
+    below_sh     = right_wrist_y > shoulder_y
 
-    oldest_x, oldest_y, oldest_t = history[0]
-    newest_x, newest_y, newest_t = history[-1]
+    # ---- SWING_USE ステートマシン ----
+    if gesture_state["use_state"] == "IDLE":
+        # 開始ゾーン: 正中線より右 + 肩より上
+        if right_of_mid and above_sh:
+            gesture_state["use_state"]    = "ARMED"
+            gesture_state["use_arm_time"] = now
+    else:  # ARMED
+        if now - gesture_state["use_arm_time"] > SWING_ARM_TIMEOUT_SEC:
+            gesture_state["use_state"] = "IDLE"   # タイムアウト
+        elif left_of_mid and below_sh:
+            # 終了ゾーン到達 → 左クリック
+            last = gesture_state["last_trigger_times"].get("SWING_USE", 0.0)
+            gesture_state["use_state"] = "IDLE"
+            if now - last >= SWING_COOLDOWN_SEC:
+                gesture_state["last_trigger_times"]["SWING_USE"] = now
+                gesture_state["scroll_state"] = "IDLE"  # SCROLL の誤発火防止
+                mouse_ctrl.click(Button.left)
+                gesture_state["message"] = "USE [Left Click]"
+                return "SWING_USE"
 
-    # 古すぎるデータは無効
-    if newest_t - oldest_t > SWING_MAX_TIME_SEC:
-        return None
+    # ---- SWING_SCROLL ステートマシン ----
+    if gesture_state["scroll_state"] == "IDLE":
+        # 開始ゾーン: 正中線より左 + 肩より下
+        if left_of_mid and below_sh:
+            gesture_state["scroll_state"]    = "ARMED"
+            gesture_state["scroll_arm_time"] = now
+    else:  # ARMED
+        if now - gesture_state["scroll_arm_time"] > SWING_ARM_TIMEOUT_SEC:
+            gesture_state["scroll_state"] = "IDLE"
+        elif right_of_mid and below_sh:
+            # 終了ゾーン到達 → ホイール
+            last = gesture_state["last_trigger_times"].get("SWING_SCROLL", 0.0)
+            gesture_state["scroll_state"] = "IDLE"
+            if now - last >= SWING_COOLDOWN_SEC:
+                gesture_state["last_trigger_times"]["SWING_SCROLL"] = now
+                mouse_ctrl.scroll(0, -3)
+                gesture_state["message"] = "SCROLL [Wheel]"
+                return "SWING_SCROLL"
 
-    dx = newest_x - oldest_x
-    dy = newest_y - oldest_y
-
-    gesture = None
-    if dx < -SWING_USE_MIN_DX and dy > SWING_USE_MIN_DY:
-        # 右上→左下: USE（左クリック）
-        gesture = "SWING_USE"
-    elif dx > SWING_SCROLL_MIN_DX and abs(dy) < SWING_SCROLL_MAX_DY:
-        # 左下→右下（水平移動）: SCROLL
-        gesture = "SWING_SCROLL"
-
-    if gesture is None:
-        return None
-
-    # クールダウン確認
-    last_trigger = gesture_state["last_trigger_times"].get(gesture, 0.0)
-    if now - last_trigger < SWING_COOLDOWN_SEC:
-        return None
-
-    gesture_state["last_trigger_times"][gesture] = now
-    gesture_state["history"].clear()
-
-    if gesture == "SWING_USE":
-        mouse_ctrl.click(Button.left)
-        gesture_state["message"] = "USE [Left Click]"
-    elif gesture == "SWING_SCROLL":
-        mouse_ctrl.scroll(0, -3)
-        gesture_state["message"] = "SCROLL [Wheel]"
-
-    return gesture
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -433,8 +432,8 @@ def process_frame(
     action_state: dict | None,
 ) -> tuple:
     """
-    Returns: (processed_image, current_pose, lean, right_wrist_xy)
-    lean = 0.0 and right_wrist_xy = None when no pose is detected.
+    Returns: (processed_image, current_pose, lean, right_wrist_xy, midline_x, shoulder_y)
+    lean=0.0, right_wrist_xy=None, midline_x=0.5, shoulder_y=0.5 when no pose detected.
     """
     image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     mp_image  = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
@@ -443,6 +442,8 @@ def process_frame(
     current_pose   = None
     lean           = 0.0
     right_wrist_xy = None
+    midline_x      = 0.5
+    shoulder_y     = 0.5
 
     if result.pose_landmarks:
         landmarks       = result.pose_landmarks[0]
@@ -453,6 +454,9 @@ def process_frame(
         lean           = get_body_lean(landmarks)
         rw             = landmarks[16]
         right_wrist_xy = (rw.x, rw.y)
+        ls, rs         = landmarks[11], landmarks[12]
+        midline_x      = (ls.x + rs.x) / 2
+        shoulder_y     = (ls.y + rs.y) / 2
 
     if combo_state is not None:
         update_combo(combo_state, current_pose)
@@ -477,7 +481,7 @@ def process_frame(
             2,
         )
 
-    return image, current_pose, lean, right_wrist_xy
+    return image, current_pose, lean, right_wrist_xy, midline_x, shoulder_y
 
 
 # ---------------------------------------------------------------------------
@@ -542,7 +546,7 @@ def run_image(detector: vision.PoseLandmarker, image_path: Path, output_path: Pa
     if image is None:
         raise FileNotFoundError(f"画像を読めません: {image_path.resolve()}")
 
-    processed, pose, _, _ = process_frame(image, detector, combo_state=None, action_state=None)
+    processed, pose, _, _, _, _ = process_frame(image, detector, combo_state=None, action_state=None)
     print(f"detected_pose={pose}")
 
     if output_path is not None:
@@ -575,7 +579,10 @@ def run_camera(detector: vision.PoseLandmarker, camera_index: int) -> None:
         "message":       "READY",
     }
     gesture_state = {
-        "history":            deque(maxlen=SWING_BUFFER_FRAMES),
+        "use_state":          "IDLE",   # "IDLE" | "ARMED"
+        "use_arm_time":       0.0,
+        "scroll_state":       "IDLE",
+        "scroll_arm_time":    0.0,
         "last_trigger_times": {},
         "message":            "",
     }
@@ -602,7 +609,7 @@ def run_camera(detector: vision.PoseLandmarker, camera_index: int) -> None:
                 print("フレーム取得に失敗しました")
                 break
 
-            processed, current_pose, lean, right_wrist_xy = process_frame(
+            processed, current_pose, lean, right_wrist_xy, midline_x, shoulder_y = process_frame(
                 frame,
                 detector,
                 combo_state=combo_state,
@@ -614,7 +621,12 @@ def run_camera(detector: vision.PoseLandmarker, camera_index: int) -> None:
 
             # モーションジェスチャー検出
             if right_wrist_xy is not None:
-                update_motion_gestures(gesture_state, right_wrist_xy[0], right_wrist_xy[1], mouse_ctrl)
+                update_motion_gestures(
+                    gesture_state,
+                    right_wrist_xy[0], right_wrist_xy[1],
+                    midline_x, shoulder_y,
+                    mouse_ctrl,
+                )
 
             # ジェスチャーメッセージをフレームに描画
             gesture_msg = str(gesture_state["message"])
